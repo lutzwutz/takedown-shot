@@ -20,11 +20,18 @@ function proxy() {
 async function solveHtml(url) {
   if (!FS) return null;
   try {
+    const body = { cmd: "request.get", url, maxTimeout: 60000 };
+    // Route FlareSolverr's solver through the residential proxy → real ISP IP
+    // + challenge-solving = reliably clears managed Cloudflare.
+    if (process.env.PROXY_SERVER) {
+      const host = process.env.PROXY_SERVER.replace(/^https?:\/\//, "");
+      body.proxy = { url: `http://${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}@${host}` };
+    }
     const r = await fetch(`${FS.replace(/\/$/, "")}/v1`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cmd: "request.get", url, maxTimeout: 60000 }),
-      signal: AbortSignal.timeout(80000),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(90000),
     });
     if (!r.ok) return null;
     const sol = (await r.json()).solution;
