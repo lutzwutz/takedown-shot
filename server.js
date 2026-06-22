@@ -26,24 +26,32 @@ function proxy() {
 // IP-whitelist requirement — give it a fixed IP and whitelist it in DataImpulse.)
 async function solveHtml(url) {
   if (!FS) return null;
-  try {
-    const body = { cmd: "request.get", url, maxTimeout: 60000 };
-    if (process.env.PROXY_SERVER && !process.env.PROXY_USERNAME) {
-      const s = process.env.PROXY_SERVER;
-      body.proxy = { url: s.startsWith("http") ? s : `http://${s}` };
-    }
-    const r = await fetch(`${FS.replace(/\/$/, "")}/v1`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90000),
-    });
-    if (!r.ok) return null;
-    const sol = (await r.json()).solution;
-    return sol ? { html: sol.response || "", status: sol.status || 200 } : null;
-  } catch {
-    return null;
+  const body = { cmd: "request.get", url, maxTimeout: 60000 };
+  if (process.env.PROXY_SERVER && !process.env.PROXY_USERNAME) {
+    const s = process.env.PROXY_SERVER;
+    body.proxy = { url: s.startsWith("http") ? s : `http://${s}` };
   }
+  // Residential proxy rotates IPs per request, so a given exit IP may be slow or
+  // still get challenged. Retry — a fresh IP each attempt usually solves.
+  const attempts = body.proxy ? 4 : 1;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const r = await fetch(`${FS.replace(/\/$/, "")}/v1`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(75000),
+      });
+      if (!r.ok) continue;
+      const sol = (await r.json()).solution;
+      if (sol && sol.response && !isChallenge(sol.response) && sol.status !== 403) {
+        return { html: sol.response, status: sol.status || 200 };
+      }
+    } catch {
+      /* slow/blocked exit IP — try a fresh one */
+    }
+  }
+  return null;
 }
 
 app.get("/healthz", (_req, res) => res.send("ok"));
