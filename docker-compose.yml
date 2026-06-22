@@ -9,7 +9,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8090:8080"
     environment:
       - FLARESOLVERR_URL=http://flaresolverr:8191
       # No-auth residential proxy — this VPS's IP must be whitelisted in DataImpulse.
