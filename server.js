@@ -1,5 +1,7 @@
 const express = require("express");
-const { chromium } = require("playwright");
+const { chromium } = require("playwright-extra");
+const stealth = require("puppeteer-extra-plugin-stealth")();
+chromium.use(stealth);
 
 const app = express();
 app.use(express.json());
@@ -7,7 +9,14 @@ app.use(express.json());
 const SECRET = process.env.SHOT_SECRET;
 const FS = process.env.FLARESOLVERR_URL;
 
-// FlareSolverr clears Cloudflare (on its own IP) and returns the real HTML.
+const isChallenge = (html) =>
+  /just a moment|performing security verification|attention required|cf-browser-verification|challenge-platform|_cf_chl/i.test(html || "");
+
+function proxy() {
+  if (!process.env.PROXY_SERVER) return undefined;
+  return { server: process.env.PROXY_SERVER, username: process.env.PROXY_USERNAME, password: process.env.PROXY_PASSWORD };
+}
+
 async function solveHtml(url) {
   if (!FS) return null;
   try {
@@ -27,9 +36,10 @@ async function solveHtml(url) {
 
 app.get("/healthz", (_req, res) => res.send("ok"));
 
-// POST /shot { url } -> downscaled full-page JPEG. Renders the FlareSolverr HTML
-// statically (JS disabled) with a <base> tag so CSS/images resolve. No live
-// re-hit of Cloudflare, no proxy, no per-shot fee.
+// POST /shot { url } -> downscaled full-page JPEG, or 422 if we can't get the
+// real page (we refuse to return a Cloudflare challenge screen as "proof").
+// Strategy: FlareSolverr HTML (free) -> if challenge & a residential PROXY is
+// configured, navigate live through it (reliable) -> else fail honestly.
 app.post("/shot", async (req, res) => {
   if (SECRET && req.headers["x-secret"] !== SECRET) return res.status(401).json({ error: "unauthorized" });
   const url = req.body && req.body.url;
@@ -38,35 +48,38 @@ app.post("/shot", async (req, res) => {
   let browser;
   try {
     const solved = await solveHtml(url);
-    browser = await chromium.launch({ args: ["--no-sandbox"] });
-    // JS disabled: render the captured HTML statically (no re-challenge / drift).
-    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, javaScriptEnabled: !solved });
-    const page = await ctx.newPage();
-    let httpStatus = 0;
+    const haveRealHtml = solved && solved.html && !isChallenge(solved.html) && solved.status !== 403;
 
-    if (solved && solved.html) {
-      httpStatus = solved.status;
+    browser = await chromium.launch({ proxy: proxy(), args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"] });
+
+    if (haveRealHtml) {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, javaScriptEnabled: false });
+      const page = await ctx.newPage();
       const origin = new URL(url).origin;
-      const html = /<base\b/i.test(solved.html)
-        ? solved.html
-        : solved.html.replace(/<head([^>]*)>/i, `<head$1><base href="${origin}/">`);
+      const html = /<base\b/i.test(solved.html) ? solved.html : solved.html.replace(/<head([^>]*)>/i, `<head$1><base href="${origin}/">`);
       await page.setContent(html, { waitUntil: "load", timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2500);
-    } else {
-      // Fallback for non-Cloudflare sites: navigate live.
-      const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      httpStatus = resp ? resp.status() : 0;
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(2000);
+      const jpg = await page.screenshot({ type: "jpeg", quality: 75, fullPage: true });
+      res.set("X-Http-Status", String(solved.status));
+      return res.type("jpeg").send(jpg);
     }
 
+    // Live capture (needs a residential proxy to reliably pass managed Cloudflare).
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    const page = await ctx.newPage();
+    const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+    await page.waitForTimeout(6000);
+    if (isChallenge(await page.content())) {
+      return res.status(422).json({ error: "challenge-not-solved", note: "needs a residential proxy (PROXY_SERVER) to capture this site" });
+    }
     const jpg = await page.screenshot({ type: "jpeg", quality: 75, fullPage: true });
-    res.set("X-Http-Status", String(httpStatus));
-    res.type("jpeg").send(jpg);
+    res.set("X-Http-Status", String(resp ? resp.status() : 0));
+    return res.type("jpeg").send(jpg);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    return res.status(500).json({ error: String(e) });
   } finally {
     if (browser) await browser.close();
   }
 });
 
-app.listen(process.env.PORT || 8080, () => console.log("render service up; flaresolverr:", !!FS));
+app.listen(process.env.PORT || 8080, () => console.log("render service up; flaresolverr:", !!FS, "proxy:", !!process.env.PROXY_SERVER));
