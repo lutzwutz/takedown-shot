@@ -9,8 +9,11 @@ app.use(express.json());
 const SECRET = process.env.SHOT_SECRET;
 const FS = process.env.FLARESOLVERR_URL;
 
+// Match only the actual interstitial challenge PAGE — not the Cloudflare
+// challenge-platform script that's referenced on every CF-served page (which
+// caused solved pages to be misread as challenges).
 const isChallenge = (html) =>
-  /just a moment|performing security verification|attention required|cf-browser-verification|challenge-platform|_cf_chl/i.test(html || "");
+  /just a moment\.\.\.|performing security verification|checking your browser before|verif(y|ying) you are (a )?human|attention required![\s\S]{0,60}cloudflare/i.test(html || "");
 
 function proxy() {
   if (!process.env.PROXY_SERVER) return undefined;
