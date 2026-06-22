@@ -57,21 +57,23 @@ app.post("/shot", async (req, res) => {
     const solved = await solveHtml(url);
     const haveRealHtml = solved && solved.html && !isChallenge(solved.html) && solved.status !== 403;
 
-    browser = await chromium.launch({ proxy: proxy(), args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"] });
-
     if (haveRealHtml) {
+      // Render the solved HTML statically — NO proxy on the render browser
+      // (the proxy was only for FlareSolverr's fetch). JS off so it can't drift.
+      browser = await chromium.launch({ args: ["--no-sandbox"] });
       const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, javaScriptEnabled: false });
       const page = await ctx.newPage();
       const origin = new URL(url).origin;
       const html = /<base\b/i.test(solved.html) ? solved.html : solved.html.replace(/<head([^>]*)>/i, `<head$1><base href="${origin}/">`);
       await page.setContent(html, { waitUntil: "load", timeout: 30000 }).catch(() => {});
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(2500);
       const jpg = await page.screenshot({ type: "jpeg", quality: 75, fullPage: true });
       res.set("X-Http-Status", String(solved.status));
       return res.type("jpeg").send(jpg);
     }
 
-    // Live capture (needs a residential proxy to reliably pass managed Cloudflare).
+    // Live capture fallback (needs the residential proxy to pass managed Cloudflare).
+    browser = await chromium.launch({ proxy: proxy(), args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"] });
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
     const page = await ctx.newPage();
     const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
