@@ -20,11 +20,19 @@ const INGEST_URL = process.env.SAAS_INGEST_URL;
 const INGEST_SECRET = process.env.SAAS_INGEST_SECRET;
 const PROXY = process.env.PROXY_SERVER;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-// A post must contain the title AND one of these to be flagged (keeps mere mentions out).
-const KEYWORDS = ["full movie", "full film", "watch", "stream", "streaming", "download", "free", "leaked", "leak", "1080p", "720p", "hd", "online", "link in", "watch now"];
+// Strong phrases = piracy on their own. Weak ones only count if the post also links out.
+const STRONG = ["full movie", "full film", "watch online", "watch free", "stream free", "free movie", "download", "leaked", "link in bio", "link in replies", "dm for", "telegram", "watch now"];
+const WEAK = ["watch", "stream", "streaming", "online", "free", "hd", "1080p", "720p"];
+// Legit-chatter signals — if present, skip (trailers, reviews, theatrical talk).
+const NEGATIVE = ["trailer", "teaser", "theaters", "theatres", "cinema", "review", "interview", "premiere", "tickets", "box office", "can't wait", "cant wait", "release date", "official trailer", "red carpet"];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const looksPiracy = (title, text) => text.includes(title.toLowerCase()) && KEYWORDS.some((k) => text.includes(k));
+function looksPiracy(title, text, hasLink) {
+  if (!text.includes(title.toLowerCase())) return false;
+  if (NEGATIVE.some((n) => text.includes(n))) return false;
+  if (STRONG.some((k) => text.includes(k))) return true;
+  return hasLink && WEAK.some((k) => text.includes(k)); // weak signal needs an outbound link
+}
 
 async function searchTitle(page, title) {
   const q = encodeURIComponent(`"${title}" (full OR watch OR stream OR download OR leaked OR free)`);
@@ -35,13 +43,14 @@ async function searchTitle(page, title) {
     const items = await page.$$eval("article", (arts) =>
       arts.map((a) => {
         const link = a.querySelector('a[href*="/status/"]');
-        return { href: link ? link.href : null, text: a.innerText || "" };
+        const ext = a.querySelector('a[href*="t.co/"], a[href^="http"]:not([href*="x.com"]):not([href*="twitter.com"])');
+        return { href: link ? link.href : null, text: a.innerText || "", hasLink: !!ext };
       })
     ).catch(() => []);
     for (const it of items) {
       if (!it.href) continue;
       const m = it.href.match(/https:\/\/(?:x|twitter)\.com\/[^/]+\/status\/\d+/);
-      if (m) found.set(m[0], it.text.toLowerCase());
+      if (m) found.set(m[0], { text: it.text.toLowerCase(), hasLink: it.hasLink });
     }
     await page.mouse.wheel(0, 3000);
     await sleep(3000);
@@ -62,7 +71,7 @@ async function searchTitle(page, title) {
   for (const t of targets) {
     try {
       const found = await searchTitle(page, t.title);
-      const hits = [...found.entries()].filter(([, text]) => looksPiracy(t.title, text)).map(([url]) => url);
+      const hits = [...found.entries()].filter(([, v]) => looksPiracy(t.title, v.text, v.hasLink)).map(([url]) => url);
       console.log(`${t.title}: scanned ${found.size}, ${hits.length} candidate(s)`);
       if (hits.length && INGEST_URL) {
         const res = await fetch(`${INGEST_URL}?secret=${INGEST_SECRET}`, {
