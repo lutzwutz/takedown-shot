@@ -9,11 +9,18 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8090:8080"
+      # Bound to localhost only — reached via the Cloudflare tunnel, not the public IP.
+      - "127.0.0.1:8090:8080"
+    volumes:
+      # Persists the burner X session + finder config across rebuilds.
+      - ./data:/app/data
     environment:
       - FLARESOLVERR_URL=http://flaresolverr:8191
       # No-auth residential proxy — this VPS's IP must be whitelisted in DataImpulse.
       - PROXY_SERVER=http://gw.dataimpulse.com:823
       - SHOT_SECRET=${SHOT_SECRET}
+      # X-finder ingest (operator tool). SAAS_INGEST_SECRET = your CRON_SECRET.
+      - SAAS_INGEST_URL=${SAAS_INGEST_URL}
+      - SAAS_INGEST_SECRET=${SAAS_INGEST_SECRET}
     depends_on:
       - flaresolverr
