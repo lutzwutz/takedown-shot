@@ -16,6 +16,18 @@ const PROXY = process.env.PROXY_SERVER;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Pull the current title list from the app (so re-adding a title can't break us);
+// fall back to the local config file if the endpoint is unavailable.
+async function loadTargets() {
+  if (INGEST_URL && SECRET) {
+    try {
+      const r = await fetch(`${INGEST_URL.replace(/\/x$/, "/titles")}?secret=${SECRET}`);
+      if (r.ok) { const d = await r.json(); if (Array.isArray(d.titles) && d.titles.length) return d.titles; }
+    } catch { /* fall back */ }
+  }
+  try { return JSON.parse(fs.readFileSync(CONFIG, "utf8")); } catch { return []; }
+}
+
 function durMins(t) { // "1:42:30" -> 102, "12:05" -> 12
   if (!t) return 0;
   const p = t.trim().split(":").map(Number);
@@ -43,7 +55,8 @@ async function searchYT(page, title) {
 }
 
 (async () => {
-  const targets = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
+  const targets = await loadTargets();
+  if (!targets.length) { console.error("no titles to scan"); return; }
   const browser = await chromium.launch({ headless: true, proxy: PROXY ? { server: PROXY } : undefined });
   const ctx = await browser.newContext({ userAgent: UA, locale: "en-US", extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" } });
   const page = await ctx.newPage();

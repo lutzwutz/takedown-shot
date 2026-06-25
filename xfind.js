@@ -58,9 +58,22 @@ async function searchTitle(page, title) {
   return found;
 }
 
+// Pull the current title list from the app (so re-adding a title can't break us);
+// fall back to the local config file if the endpoint is unavailable.
+async function loadTargets() {
+  if (INGEST_URL && INGEST_SECRET) {
+    try {
+      const r = await fetch(`${INGEST_URL.replace(/\/x$/, "/titles")}?secret=${INGEST_SECRET}`);
+      if (r.ok) { const d = await r.json(); if (Array.isArray(d.titles) && d.titles.length) return d.titles; }
+    } catch { /* fall back */ }
+  }
+  try { return JSON.parse(fs.readFileSync(CONFIG, "utf8")); } catch { return []; }
+}
+
 (async () => {
   if (!fs.existsSync(SESSION)) { console.error("No session at", SESSION, "- run xlogin.js locally and upload x-session.json."); process.exit(1); }
-  const targets = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
+  const targets = await loadTargets();
+  if (!targets.length) { console.error("no titles to scan"); process.exit(1); }
   const browser = await chromium.launch({ headless: true, proxy: PROXY ? { server: PROXY } : undefined });
   const ctx = await browser.newContext({ storageState: SESSION, userAgent: UA, viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
