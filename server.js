@@ -110,4 +110,45 @@ app.post("/shot", async (req, res) => {
   }
 });
 
+// POST /html { url } -> fully rendered page HTML (JS executed), for source
+// tracing. Same Cloudflare-clearing strategy as /shot, but keeps JavaScript on
+// through a live navigation so client-side-injected player iframes appear in the
+// DOM. Returns { html, status }; the caller parses out the file host.
+app.post("/html", async (req, res) => {
+  if (SECRET && req.headers["x-secret"] !== SECRET) return res.status(401).json({ error: "unauthorized" });
+  const url = req.body && req.body.url;
+  if (!url) return res.status(400).json({ error: "url required" });
+
+  const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  let browser;
+  try {
+    // FlareSolverr already runs a JS browser and returns post-load HTML — enough
+    // for aggregators that inject their player iframe on load.
+    const solved = await solveHtml(url);
+    if (solved && solved.html && !isChallenge(solved.html) && solved.status !== 403) {
+      return res.json({ html: solved.html, status: solved.status });
+    }
+    // Live navigation through the authenticated proxy, JS on, settle, return DOM.
+    if (process.env.PROXY_SERVER && process.env.PROXY_USERNAME) {
+      browser = await chromium.launch({ proxy: proxy(), args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"] });
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US", userAgent: UA });
+      const page = await ctx.newPage();
+      const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+      for (let i = 0; i < 8; i++) {
+        if (!isChallenge(await page.content().catch(() => ""))) break;
+        await page.waitForTimeout(2500);
+      }
+      await page.waitForTimeout(3500); // let client-side player injection settle
+      const html = await page.content().catch(() => "");
+      if (isChallenge(html)) return res.status(422).json({ error: "challenge-not-solved" });
+      return res.json({ html, status: resp ? resp.status() : 0 });
+    }
+    return res.status(422).json({ error: "challenge-not-solved" });
+  } catch (e) {
+    return res.status(500).json({ error: String(e) });
+  } finally {
+    if (browser) await browser.close();
+  }
+});
+
 app.listen(process.env.PORT || 8080, () => console.log("render service up; flaresolverr:", !!FS, "proxy:", !!process.env.PROXY_SERVER));
